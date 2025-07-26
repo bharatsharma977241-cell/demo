@@ -1,0 +1,208 @@
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import warnings
+warnings.filterwarnings('ignore')
+
+class EVChargingDemandPredictor:
+    def __init__(self):  # FIXED CONSTRUCTOR
+        self.models = {}
+        self.scaler = StandardScaler()
+        self.label_encoders = {}
+        self.feature_columns = []
+        self.target_column = 'charging_demand_kw'
+
+    def generate_synthetic_data(self, n_samples=10000):
+        np.random.seed(42)
+        start_date = datetime(2023, 1, 1)
+        dates = [start_date + timedelta(hours=i) for i in range(n_samples)]
+        data = []
+
+        for date in dates:
+            hour = date.hour
+            day_of_week = date.weekday()
+            month = date.month
+            temp = 15 + 10 * np.sin(2 * np.pi * (month - 1) / 12) + np.random.normal(0, 5)
+            weather_condition = np.random.choice(['clear', 'cloudy', 'rainy'], p=[0.6, 0.3, 0.1])
+            location_type = np.random.choice(['urban', 'suburban', 'highway'], p=[0.5, 0.3, 0.2])
+            num_charging_stations = np.random.randint(2, 20)
+            electricity_price = 0.12 + np.random.normal(0, 0.02)
+
+            base_demand = 50
+            if 7 <= hour <= 9 or 17 <= hour <= 19:
+                hour_multiplier = 2.5 + np.random.normal(0, 0.3)
+            elif 10 <= hour <= 16:
+                hour_multiplier = 1.5 + np.random.normal(0, 0.2)
+            elif 20 <= hour <= 23:
+                hour_multiplier = 1.8 + np.random.normal(0, 0.3)
+            else:
+                hour_multiplier = 0.3 + np.random.normal(0, 0.1)
+
+            day_multiplier = 1.2 if day_of_week < 5 else 0.8
+            location_multipliers = {'urban': 1.5, 'suburban': 1.0, 'highway': 1.3}
+            location_multiplier = location_multipliers[location_type]
+            weather_multipliers = {'clear': 1.0, 'cloudy': 0.95, 'rainy': 0.85}
+            weather_multiplier = weather_multipliers[weather_condition]
+            temp_multiplier = 1.2 if temp < 0 or temp > 35 else 1.0
+            station_multiplier = min(1.0 + (num_charging_stations - 5) * 0.05, 2.0)
+
+            charging_demand = (
+                base_demand * hour_multiplier * day_multiplier *
+                location_multiplier * weather_multiplier * temp_multiplier * station_multiplier
+            )
+            charging_demand += np.random.normal(0, 5)
+            charging_demand = max(0, charging_demand)
+
+            data.append({
+                'datetime': date,
+                'hour': hour,
+                'day_of_week': day_of_week,
+                'month': month,
+                'temperature': temp,
+                'weather_condition': weather_condition,
+                'location_type': location_type,
+                'num_charging_stations': num_charging_stations,
+                'electricity_price': electricity_price,
+                'charging_demand_kw': charging_demand
+            })
+
+        return pd.DataFrame(data)
+
+    def create_features(self, df):
+        df = df.copy()
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+        df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
+        df['day_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
+        df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
+        df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
+        df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
+        df['is_rush_hour'] = ((df['hour'].between(7, 9)) | (df['hour'].between(17, 19))).astype(int)
+        df['is_peak_evening'] = df['hour'].between(20, 23).astype(int)
+        df['temp_category'] = pd.cut(df['temperature'], [-np.inf, 0, 10, 25, np.inf],
+                                     labels=['very_cold', 'cold', 'moderate', 'hot'])
+        df['demand_lag_1h'] = df['charging_demand_kw'].shift(1)
+        df['demand_lag_24h'] = df['charging_demand_kw'].shift(24)
+        df['demand_rolling_mean_24h'] = df['charging_demand_kw'].rolling(24).mean()
+        return df
+
+    def preprocess_data(self, df):
+        df = self.create_features(df).dropna()
+        categorical_cols = ['weather_condition', 'location_type', 'temp_category']
+        for col in categorical_cols:
+            if col not in self.label_encoders:
+                self.label_encoders[col] = LabelEncoder()
+                df[col] = self.label_encoders[col].fit_transform(df[col])
+            else:
+                df[col] = self.label_encoders[col].transform(df[col])
+
+        self.feature_columns = [
+            'hour', 'day_of_week', 'month', 'temperature', 'weather_condition',
+            'location_type', 'num_charging_stations', 'electricity_price',
+            'hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos',
+            'is_weekend', 'is_rush_hour', 'is_peak_evening', 'temp_category',
+            'demand_lag_1h', 'demand_lag_24h', 'demand_rolling_mean_24h'
+        ]
+
+        X = df[self.feature_columns]
+        y = df[self.target_column]
+        return X, y
+
+    def train_models(self, X_train, y_train):
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        models = {
+            'Linear Regression': LinearRegression(),
+            'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, random_state=42)
+        }
+        for name, model in models.items():
+            if name == 'Linear Regression':
+                model.fit(X_train_scaled, y_train)
+            else:
+                model.fit(X_train, y_train)
+            self.models[name] = model
+        print("Models trained successfully!")
+
+    def evaluate_models(self, X_test, y_test):
+        results = {}
+        X_test_scaled = self.scaler.transform(X_test)
+        for name, model in self.models.items():
+            y_pred = model.predict(X_test_scaled if name == 'Linear Regression' else X_test)
+            results[name] = {
+                'MAE': mean_absolute_error(y_test, y_pred),
+                'MSE': mean_squared_error(y_test, y_pred),
+                'RMSE': np.sqrt(mean_squared_error(y_test, y_pred)),
+                'R²': r2_score(y_test, y_pred),
+                'Predictions': y_pred
+            }
+        return results
+
+    def plot_results(self, results, y_test):
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        metrics = ['MAE', 'RMSE', 'R²']
+        model_names = list(results.keys())
+        for i, metric in enumerate(metrics):
+            ax = axes[0, i] if i < 2 else axes[1, 0]
+            values = [results[m][metric] for m in model_names]
+            ax.bar(model_names, values)
+            ax.set_title(f'{metric} Comparison')
+            ax.tick_params(axis='x', rotation=45)
+
+        best_model = min(results.keys(), key=lambda x: results[x]['RMSE'])
+        y_pred = results[best_model]['Predictions']
+        axes[1, 1].scatter(y_test, y_pred, alpha=0.5)
+        axes[1, 1].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
+        axes[1, 1].set_title(f'Actual vs Predicted - {best_model}')
+        axes[1, 1].set_xlabel('Actual Demand (kW)')
+        axes[1, 1].set_ylabel('Predicted Demand (kW)')
+        plt.tight_layout()
+        plt.show()
+
+    def feature_importance(self):
+        rf_model = self.models.get('Random Forest')
+        if rf_model:
+            importance = pd.DataFrame({
+                'feature': self.feature_columns,
+                'importance': rf_model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            plt.figure(figsize=(10, 8))
+            sns.barplot(data=importance.head(15), x='importance', y='feature')
+            plt.title('Top 15 Feature Importances (Random Forest)')
+            plt.show()
+            return importance
+        return None
+
+    def predict_demand(self, input_data):
+        best_model = self.models.get('Random Forest')
+        return best_model.predict(input_data)
+
+if __name__ == "__main__":
+    predictor = EVChargingDemandPredictor()
+    print("Generating data...")
+    df = predictor.generate_synthetic_data(n_samples=8760)
+    X, y = predictor.preprocess_data(df)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+    predictor.train_models(X_train, y_train)
+    results = predictor.evaluate_models(X_test, y_test)
+
+    print("Performance Metrics:")
+    for model, metrics in results.items():
+        print(f"{model}: MAE={metrics['MAE']:.2f}, RMSE={metrics['RMSE']:.2f}, R²={metrics['R²']:.3f}")
+
+    predictor.plot_results(results, y_test)
+    print("Feature Importance:")
+    print(predictor.feature_importance().head())
+
+    sample = X_test.iloc[[0]].copy()
+    prediction = predictor.predict_demand(sample)
+    print(f"\nExample Prediction: {prediction[0]:.2f} kW")
