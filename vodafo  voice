@@ -1,0 +1,36 @@
+import pandas as pd
+
+df = pd.read_csv("/content/vodafon voice.csv", encoding='latin1')
+
+# Show first few rows
+print(df.head())
+print(df.info())
+  # Drop duplicates
+df = df.drop_duplicates()
+
+# Convert date columns if present
+df['last review'] = pd.to_datetime(df['last review'], errors='coerce')
+  import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Room type distribution (using 'room type' column)
+plt.figure(figsize=(6,4))
+sns.countplot(x="room type", data=df, palette="pastel")
+plt.title("Bookings by Room Type")
+plt.show()
+
+# 2. Distribution of number of reviews (using 'number of reviews' column)
+plt.figure(figsize=(8,5))
+sns.histplot(x="number of reviews", data=df, bins=20, palette="viridis")
+plt.title("Distribution of Number of Reviews")
+plt.show()
+
+# 3. Average price by neighbourhood group (using 'neighbourhood group' and 'price' columns - price needs cleaning first)
+# Skipping this for now as 'price' is an object type and requires cleaning.
+
+# 4. Distribution of review rate number (using 'review rate number' column)
+plt.figure(figsize=(6,4))
+sns.countplot(x="review rate number", data=df, palette="coolwarm")
+plt.title("Distribution of Review Rate Number")
+plt.show()
+  
